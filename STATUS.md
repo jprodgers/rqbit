@@ -1,428 +1,290 @@
 # BEP 52 for JETCARP: status
 
-Branch `claude/kind-fermi-dx3tx8` of `jprodgers/rqbit`. Last updated 2026-11-11, after the first
-session. Written with an AI model (Claude), like everything else on this branch.
+Branch `claude/kind-fermi-dx3tx8` of `jprodgers/rqbit`. Last updated 2026-11-11, after the second
+session. Everything here was written with an AI model (Claude Code), except the upstream pull
+requests merged in section 3, which are by their upstream author.
 
 ## 1. Where this stands
 
-**No BEP 52 implementation code has been written here yet, on purpose.** The handoff says to find
-out first whether v2 work already exists upstream, and it does, at three levels:
+Jimmie's decisions after the first session: start with a creation crate of our own (option C),
+validate the open upstream BEP 52 work (option A) and use it if it holds up, and stop treating
+upstream acceptance as a goal. This fork is its own thing, maintained for JETCARP.
 
-1. Small v2 groundwork is already merged in rqbit `main`.
-2. The maintainer has said, in writing, how he wants v2 to arrive (small slices, no dead code, a
-   specific order), and has turned down a large v2 pull request for being large and AI-written.
-3. On 2026-11-11, the day of this session, another contributor opened pull requests that cover
-   nearly the whole handoff: v2 and hybrid download and seeding, v2 and hybrid torrent creation,
-   and BEP 19 web seeds. They are large, unreviewed, and have no maintainer response yet.
+Both are done:
 
-A third parallel implementation from us would duplicate (3) and still face (2). Which way to go is
-Jimmie's call; the options are in section 5 and my recommendation is option C then A-lite.
+- **`crates/create_torrent`** (package `librqbit-create-torrent`) makes hybrid and v2-only torrents
+  deterministically, as a synchronous pure-Rust library. It is what JETCARP v0.6.0 needs and it is
+  ready to use (section 2).
+- **The upstream stack works and is now on this branch**, with two fixes of ours. It passes its
+  own tests, its interop tests against libtorrent 2.1.1, and, after one fix, every scenario of a
+  new 21-scenario harness against qBittorrent 4.6.3 and Transmission 4.0.5 (sections 3 and 4). The branch can
+  download and seed v2 and hybrid torrents, use `btmh` magnet links, and use web seeds.
 
-What this session did produce:
+What is not done: nothing has been built or run on Windows or macOS; the embedding API has not
+been exercised from a host application; several weaknesses found by reading the upstream code are
+still there (section 5).
 
-- This report.
-- `scripts/bep52/bep52_ref.py`: an independent, standard-library-only Python reference for BEP 52
-  and hybrid torrents (per-file `pieces root`, piece layers, both info hashes, magnet, `.torrent`
-  bytes, and a checker for existing `.torrent` files). It is the "independent computation" the
-  handoff asks for in section 5, and it is useful whichever option is chosen.
-- `scripts/bep52/crosscheck_libtorrent.py`: checks the reference against libtorrent 2.1.1. All 33
-  checks pass (section 4).
+## 2. The creation crate (handoff 4.1)
 
-## 2. What already exists upstream
+`crates/create_torrent`. Its README has the API and the caveats; in short:
 
-The fork's `main` is identical to upstream `main` (commit `f23bacd`, after release 9.1.0).
+```toml
+[dependencies]
+librqbit-create-torrent = { git = "https://github.com/jprodgers/rqbit", branch = "claude/kind-fermi-dx3tx8" }
+```
 
-### 2.1 Merged in `main`
+```rust
+let files = vec![InputFile::new(["objects", "ab", "abcd.parquet"], "/data/objects/ab/abcd.parquet")];
+let options = CreateOptions {
+    trackers: vec![vec!["https://tracker.example/announce".into()]],
+    web_seeds: vec!["https://data.example/v1/".into()],
+    ..CreateOptions::new("my-data-v1", 1 << 20)
+};
+let torrent = create(&files, &options, &HashOptions::default())?;
+// torrent.bytes, .info_hash_v1, .info_hash_v2, .magnet, .files[i].pieces_root
+```
 
-| What | Where it came from |
+| Handoff 4.1 asks for | Result |
 | --- | --- |
-| `Magnet` parses and writes `xt=urn:btmh:1220…`, alone or with `btih` | ikatson/rqbit#72 (2024) |
-| `ISha256` in `sha1w` (both backends), `Id32::truncate_for_dht()`, `Magnet::new(v1, v2, …)`, BEP 52 error variants in `librqbit_core::Error` (unused so far) | ikatson/rqbit#562 (Feb 2026) |
-| Hybrid torrents can be added, as v1 torrents (duplicate `.pad/<n>` names accepted) | ikatson/rqbit#701 (Oct 2026) |
-| The repository's `CLAUDE.md` rule "use v2 (BEP 52) structures" | ikatson/rqbit#562 |
+| List of (path in torrent, local file); caller's piece length; trackers; `url-list`; comment; name | Yes |
+| `.torrent` bytes, both info hashes, magnet, each file's `pieces root` | Yes |
+| Deterministic; no `creation date` or `created by` unless asked | Yes. Tested: reversed input and 1, 2 and 7 threads give identical bytes |
+| Same info hash as independent publishers | The info dictionary is libtorrent's: 16 whole `.torrent` fixtures made by libtorrent 2.1.1 are reproduced byte for byte |
+| No async runtime, small crate | Synchronous; depends only on RustCrypto `sha1` and `sha2`, nothing from the workspace |
+| 0-byte files, files under 16 KiB | In the libtorrent fixtures |
+| Files over 4 GiB | A 4.5 GiB file: same bytes as the Python reference, and libtorrent loads it |
+| 100,000 files | Same bytes as the Python reference. 1.7 s at 16 KiB pieces, 16 s at 1 MiB pieces |
+| Hashing near disk speed; throughput for 10 GiB | 10 GiB in 201 files, hybrid, 1 MiB pieces, 4 cores, cold cache: **5.2 s, 1,960 MiB/s**. Reading the same files with `cat` took 4.5 s. From a warm cache: 2,320 MiB/s; one thread 620 MiB/s; v2-only 4,300 MiB/s. libtorrent's creator took 20.8 s on the same data and gave the same hashes |
 
-What `main` cannot do: a v2-only `.torrent` fails to parse (`pieces` is a required field), a
-`btmh`-only magnet cannot be added (the session needs the v1 hash), a hybrid torrent only joins the
-v1 swarm, and `create_torrent` makes v1 torrents only.
+Beyond the handoff: `hash_files` and `build` are separate, so JETCARP can keep each file's hashes
+and build the next data version's torrent without reading unchanged files again.
 
-### 2.2 What the maintainer has said
+Four things JETCARP should know, all found while testing:
 
-These are from the issue and pull-request threads. Quotes are short; the rest is paraphrase.
+1. **The last-file padding rule** (decision 4 below). Implemented as libtorrent does it.
+2. **libtorrent's own creator has a file-order bug**, and we do not copy it. When a folder sits
+   next to a file or folder whose name continues it with a character below `/` (`data` next to
+   `data.json` or `data-old`), libtorrent 2.1.1 writes the v1 file list in whole-path order
+   instead of file-tree order, and then refuses to load its own hybrid torrent. The crate uses
+   file-tree order, and libtorrent loads the result. JETCARP's `objects/sha256/ab/...` layout
+   does not hit this, but a `manifest/` folder next to a `manifest.json` would.
+3. **Very large file counts are a problem for other clients, not for the crate.** With 64-hex
+   file names, a hybrid torrent of 100,000 files is 33 MB and libtorrent's default decoding
+   limits reject it; 50,000 files (17 MB) load, and a v2-only torrent of 100,000 files (14 MB)
+   loads. Magnet links are likely worse, since clients cap the size of metadata they fetch
+   from peers; I have not measured that. Splitting a data version into several torrents, or
+   publishing very large sets as v2-only, avoids both.
+4. **Hybrid torrents pay for padding.** Each padded file costs up to one piece of SHA-1 over
+   zeros, for the creator and for every client that checks the v1 half. That is the difference
+   between 1.7 s and 16 s above. Prefer a small piece length when files are many and small.
 
-- **Interest** (issue 70, 2023): not opposed, not a priority. He would merge v2 "if the end result
-  doesn't make things terribly complicated". A later comment there argues for v2 from exactly
-  JETCARP's angle: per-file roots, cross-torrent seeding, content-addressed archives.
-- **Size** (pull request 554, an 8,000-line v2 pull request, Feb 2026): "I can't accept giant
-  (esp. AI-created) PRs, little reviewable pieces maybe." On issue 546 he put a number on it:
-  pieces of about 500 lines that each make sense to merge alone. Partial v2 support in `main` for a
-  while is fine. v1 stability and performance must not suffer.
-- **No dead code** (pull requests 562 and 568): types and helpers land with their first user. The
-  stand-alone Merkle module (568) was not reviewed for that reason, and its author closed it.
-- **Order** (pull request 568): start with parsing v2 metainfo, then go top-down: fetch piece
-  layers when missing (the magnet case), validate data on disk, then download.
-- **AI** (`AI_POLICY.md`, which adopts Ghostty's): all AI use must be disclosed, naming the tool
-  and the extent; the human submitting must understand the code and be able to explain it without
-  the AI; AI-written issue and comment text must be reviewed and trimmed by a human first.
-- **What gets merged**: the 15 most recently merged pull requests are almost all small fixes from
-  outside contributors.
+## 3. Validating the upstream stack (option A)
 
-The earlier v2 effort (issue 546, by `meatsquirk`) stalled: after 568 was closed in July 2026 its
-author said a first slice (parse and validate v2 metainfo) would follow, and none has appeared.
-Issue 546 is still the open design thread.
+Upstream context, briefly (the first session's survey): the maintainer accepts only small,
+separately useful pull requests with no unused code and has turned down a large AI-written v2
+pull request. On 2026-11-11 a contributor (`zerx-lab`) opened large stacked pull requests covering
+v2 and hybrid torrents (748), creation (750), web seeds (739) and storage operations (740). They
+are unreviewed upstream. Jimmie decided not to engage upstream; nothing was posted.
 
-### 2.3 The pull requests opened on 2026-11-11
+What was run against the head of pull request 750 (`773882d6`), which contains the others:
 
-All by `zerx-lab`, who has 23 pull requests on rqbit; one small fix is merged, the rest are open.
-None of the ones below has a review or a maintainer comment yet. Their descriptions do not say
-whether AI was used.
-
-| Pull request | Covers | Own size | Stacked on |
-| --- | --- | --- | --- |
-| ikatson/rqbit#748 | v2 and hybrid: metainfo, Merkle verification, both swarms, hash request / hashes / hash reject, `btmh` magnets | +7,218 lines, 44 files | 739, 740 |
-| ikatson/rqbit#750 | Creating v1, v2 and hybrid torrents; trackers, web seeds, comment; progress and cancel | +2,677 lines, 13 files | 748 |
-| ikatson/rqbit#739 | BEP 19 web seeds | +4,615 lines, 30 files | none |
-| ikatson/rqbit#740 | Force recheck, seed mode, move storage | +8,668 lines, 36 files | 721 |
-| ikatson/rqbit#745 | Per-torrent rate and peer limits changeable at run time | about +2,500 lines | none |
-
-Because they are stacked, the v2 pull request shows as a 20,000-line diff against `main`. Given
-section 2.2, I do not expect these to be merged in this form; whether the maintainer asks for them
-to be split, ignores them, or closes them is unknown today.
-
-Related open items: issue 698 and pull request 736 (the existing `create_torrent` writes one piece
-hash too many when the content ends on a piece boundary; qBittorrent rejects such torrents), issue
-500 (web seeds wanted), issue 634 (SHA backend tied to the TLS feature; section 3.3).
-
-## 3. How the open pull requests compare with what JETCARP needs
-
-**This is from reading the code, not running it.** This session was not permitted to build or run
-code from a third party's unreviewed pull request, so nothing below is a test result. Jimmie can
-allow that for a later session (section 6).
-
-### 3.1 Creation (handoff 4.1) against pull request 750
-
-Read in full: `crates/librqbit/src/create_torrent_file.rs` at the pull request's head.
-
-| JETCARP needs | Pull request 750 | Verdict |
-| --- | --- | --- |
-| Input is a list of (path in torrent, local file) | Takes one folder or file path and walks it | **Gap.** A data version that is a subset of the store would need a folder of links |
-| Caller chooses the piece length | `piece_length: Option<u32>`, power of two, 16 KiB to 128 MiB | Met |
-| Trackers, `url-list`, comment, name | All present; `url-list` is a string for one web seed and a list otherwise, like libtorrent | Met |
-| Output: bytes, both hashes, magnet | `as_bytes()`, `info_hash()`, `info_hash_v2()`, `as_magnet()` (writes `btih` and `btmh` for hybrids) | Met |
-| Output: each file's `pieces root` | In `meta.info.file_tree`, no direct accessor | Met, slightly awkward |
-| No `creation date` unless asked | Written only when given | Met |
-| No `created by` unless asked | **Defaults to `rqbit <version>`**; `Some("")` turns it off | Caller must pass `created_by: Some("")`. It is outside the info dictionary, so info hashes are unaffected, but `.torrent` bytes would change with every rqbit release |
-| File order from the sorted file tree | Sorted by path component bytes | Met |
-| No dependence on read order, no randomness | Single pass in sorted order | Met by design |
-| Same info hash as other publishers | Same layout as libtorrent's default, including a padding file after the last file; its interop test asserts equal hashes with libtorrent 2.1.1 | Met, if all publishers use the same tail-padding rule (section 4) |
-| Callable without an async runtime | The blocking function is private; the public `create_torrent` is `async` and needs a `BlockingSpawner` | **Gap** |
-| From a small crate | Lives in `librqbit` (the whole client). It only uses `librqbit-core`, `walkdir` and a cancellation token, so it could move to `librqbit-core` | **Gap**, fixable |
-| 0-byte files | No `pieces root`, no padding after them | Met by reading |
-| Files under 16 KiB, over 4 GiB | Lengths are `u64` throughout; a small file's root is over its own blocks | Met by reading |
-| 100,000 files | File tree limit is 2^20 files; piece layers are deduplicated with a linear scan, which is quadratic in the number of multi-piece files (about 5×10^9 comparisons at 100,000) | **Likely slow**, small fix |
-| All files empty | Rejected | Fine for JETCARP |
-| Throughput near disk speed | One thread, SHA-1 then SHA-256 over the same 1 MiB buffer. Not measured. From the hash speeds in section 3.3, expect roughly 600 MiB/s for hybrids on a CPU with SHA extensions, less than a fast NVMe | **Unmeasured; probably short of NVMe speed** |
-
-### 3.2 Download and seeding (handoff 4.2) against pull request 748
-
-The code review is in section 3.4. From the pull request's own description:
-
-- Present: start from `.torrent` or `btmh` magnet; piece layers fetched and served with hash
-  messages; hybrid torrents in both swarms; corrupt data caught by the Merkle check; fastresume;
-  file selection through the existing mechanism.
-- Stated limits: hash requests below the piece layer are refused (only piece layers are kept), so
-  verification is per piece, not per 16 KiB block.
-- Tested against libtorrent 2.1.1 through its Python bindings only. **Not tested against
-  qBittorrent or Transmission**, and the interop tests are `#[ignore]`, so CI does not run them.
-- "Restart must not rehash terabytes": relies on fastresume plus the `skip_initial_check` and seed
-  mode from pull request 740. Needs to be run to be believed.
-
-### 3.3 Embedding (handoff 4.3) against `main`
-
-Measured on `main` with `cargo tree`.
-
-| Feature set | Result |
+| Check | Result |
 | --- | --- |
-| default (`default-tls`, `http-api-client`) | SHA through `crypto-hash`, which is **OpenSSL on Linux**; TLS as reqwest's default |
-| `default-features = false` | Does not compile: exactly one SHA backend must be chosen, and both choices are tied to a TLS feature |
-| `default-features = false, features = ["rust-tls"]` | **No OpenSSL.** rustls for HTTPS trackers; SHA-1 and SHA-256 through `aws-lc-rs`. No web UI, HTTP API, or npm |
+| Its unit tests (`librqbit-core`, peer protocol, bencode) | 121 pass |
+| Its `librqbit` test suite | 197 of 198 pass. The one failure needs a directory that root cannot write to, and the tests ran as root; it passes with that privilege removed |
+| Its ignored interop tests against libtorrent 2.1.1 (v2, hybrid, magnets, web seeds, creation) | 16 of 16 pass |
+| Builds with `default-features = false, features = ["rust-tls"]` | Yes |
+| Our harness against qBittorrent 4.6.3 and Transmission 4.0.5, unmodified | **3 of 21 scenarios fail**: see below |
+| The same after our fix | **None fail** (section 4) |
 
-So **`default-features = false, features = ["rust-tls"]` is the feature set for JETCARP today.**
-It is not pure Rust: `aws-lc-rs` builds C and assembly (needs a C compiler, CMake, and NASM on some
-Windows targets). There is no RustCrypto backend in `sha1w`. rustls itself has no production
-pure-Rust crypto provider, so HTTPS trackers will need `aws-lc-rs` or `ring` whatever we do; the
-part that can be pure Rust is hashing, which matters most for the creation-only use in v0.6.0.
+Two real defects came out of this, both now fixed on this branch with tests:
 
-Upstream context: in issue 634 the maintainer said he dropped the RustCrypto `sha1` crate long ago
-for being "extremely slow", would take a switch from `aws-lc-rs` to `ring`, and would also accept
-making the SHA backend selectable separately from TLS. Two pull requests tried (662, closed by its
-author; 692, open). I measured the backends on this machine (16 KiB blocks, one thread, Xeon with
-SHA extensions):
+1. **qBittorrent could not download a v2-only torrent from rqbit.** libtorrent 2.0, the library
+   of every qBittorrent release so far, treats a file's short last piece as a whole piece padded
+   with zeros and requests the whole 16 KiB block the file ends in. libtorrent 2.1 asks only for
+   the bytes that exist, and upstream's code was only tested against 2.1: it called the 2.0 form
+   an invalid request and dropped the peer. Any file whose length is not a multiple of 16 KiB
+   stalled. Hybrids were unaffected. Fix: answer such a request with the data followed by zeros
+   (`d1a5c156`, about 50 lines, with a unit test and a wire-level test that fails without it).
+2. **rqbit could not start a session on a host without IPv6**, on upstream `main` too: the UDP
+   tracker client binds `[::]` unconditionally. Found because the test machine has no IPv6; 92
+   of 198 tests failed before starting. Fix: fall back to IPv4, for the tracker client and the
+   peer listener (`5e7180bd`, `60deea66`).
 
-| Backend | SHA-1 | SHA-256 |
-| --- | --- | --- |
-| RustCrypto `sha1` / `sha2` 0.10 | 1,355 MiB/s | 1,245 MiB/s |
-| `aws-lc-rs` | 1,175 MiB/s | 1,260 MiB/s |
-| `ring` 0.17 | **355 MiB/s** | 1,220 MiB/s |
-| RustCrypto with CPU SHA support disabled (`force-soft`) | 515 MiB/s | 245 MiB/s |
+**Verdict: A is good enough to build on, and this branch now does.** The merge is commits
+`2c0d9b8e` and `c07639ee`; upstream's commits keep their author. After the merge and fixes:
+`cargo fmt --check` clean, `cargo clippy --all-targets` no warnings, and every crate's tests pass
+(389 pass; the one root-only failure as above; 23 ignored, of which 16 are the libtorrent interop
+tests, run separately).
 
-Two things follow. On x86-64 CPUs with SHA extensions (AMD since about 2017, Intel desktop since
-about 2021) RustCrypto is now as fast as `aws-lc-rs`, so the maintainer's objection is out of date
-there; on older CPUs it is slower. I have not measured ARM. And `ring`'s SHA-1 is
-3 to 4 times slower than either on this CPU, so the switch to `ring` that the maintainer welcomed
-would slow v1 hashing; neither open pull request mentions that. An opt-in `sha1-rustcrypto` feature
-is a small, self-contained change that I think upstream would take with these numbers. It changes
-the public feature list, so it is listed as a decision in section 6 rather than done.
+For comparison, writing the same from scratch: the upstream v2 work is about 7,200 added lines
+(nearly half of them tests) touching the piece layout, verification, the peer protocol, session
+identity and persistence, plus 4,600 for web seeds. I estimate eight to ten sessions like this
+one for v2 and hybrid at the same level of testing, and three or four more for web seeds. The
+creation part is already done in our crate.
 
-The library API JETCARP needs, as it is on `main`:
+## 4. Interop matrix
 
-| Need | On `main` |
+`scripts/bep52/interop/interop.py`; its README explains how to run it and what each scenario
+does. One machine, a private tracker, no public swarm. Every download is compared with its source
+byte for byte.
+
+rqbit under test: this branch at `60deea66`, release build. Peers: qBittorrent 4.6.3 (libtorrent 2.0.10), Transmission 4.0.5.
+
+| # | rqbit does | Peer | Result | Detail |
+| --- | --- | --- | --- | --- |
+| 1a | rqbit creates+seeds hybrid | qBittorrent 4.6.3 downloads | pass | 41 files identical |
+| 1b | rqbit creates+seeds v2-only | qBittorrent 4.6.3 downloads | pass | 41 files identical |
+| 1c | crate creates hybrid, rqbit seeds | qBittorrent 4.6.3 and Transmission 4.0.5 download | pass | 41 files identical in both |
+| 1d | same hybrid from rqbit, crate, libtorrent | libtorrent 2.0.10 | pass | same v1 and v2 info hashes from all three |
+| 2a | rqbit downloads hybrid (.torrent) | qBittorrent 4.6.3 seeds, libtorrent 2.0.10 created | pass | 41 files identical |
+| 2b | rqbit downloads v2-only (.torrent) | qBittorrent 4.6.3 seeds, libtorrent 2.0.10 created | pass | 41 files identical |
+| 3a | rqbit downloads v2-only from a btmh magnet | qBittorrent 4.6.3 seeds | pass | 41 files identical |
+| 3b | rqbit seeds v2-only | qBittorrent 4.6.3 downloads from a btmh magnet | pass | 41 files identical |
+| 3c | rqbit downloads a hybrid from a btmh-only magnet | qBittorrent 4.6.3 seeds | pass | 41 files identical |
+| 4a | rqbit downloads hybrid from a v1-only seed | Transmission 4.0.5 seeds | pass | 41 files identical |
+| 4b | rqbit seeds hybrid to a v1 and a v2 peer | Transmission 4.0.5 and qBittorrent 4.6.3 download | pass | 41 files identical in both; announced under both hashes |
+| 4c | rqbit downloads hybrid from a v1 and a v2 seed | Transmission 4.0.5 and qBittorrent 4.6.3 seed | pass | 41 files identical; data fetched from 1 peer(s) |
+| 5a | rqbit downloads hybrid from a corrupt seed, then a good one | two qBittorrent 4.6.3 seeds | pass | 41 files identical; 2 corrupt piece(s) rejected before a good seed joined |
+| 5b | rqbit downloads v2-only from a corrupt seed, then a good one | two qBittorrent 4.6.3 seeds | pass | 41 files identical; 2 corrupt piece(s) rejected before a good seed joined |
+| 6a | rqbit downloads some files of a hybrid | qBittorrent 4.6.3 seeds | pass | 13 chosen files identical; 0 other file(s) complete, 0 stray bytes on disk |
+| 6b | rqbit downloads some files of a v2-only | qBittorrent 4.6.3 seeds | pass | 13 chosen files identical; 0 other file(s) complete, 0 stray bytes on disk |
+| 7a | rqbit restarts while seeding (hybrid store) | qBittorrent 4.6.3 downloads afterwards | pass | 2.0 GiB: first check 4.1 s; restart after a clean stop 1.0 s, after kill -9 1.0 s; qBittorrent then downloaded it all |
+| 7b | rqbit restarts while seeding (v2-only store) | qBittorrent 4.6.3 downloads afterwards | pass | 2.0 GiB: first check 2.6 s; restart after a clean stop 0.5 s, after kill -9 0.5 s; qBittorrent then downloaded it all |
+| 8a | JETCARP store: rqbit seeds hybrid | qBittorrent 4.6.3 downloads | pass | 201 files identical; 201 pieces roots match the reference |
+| 8b | JETCARP store: rqbit downloads hybrid | qBittorrent 4.6.3 seeds | pass | 201 files identical |
+| 9a | v2-only torrent given to a v1-only client | Transmission 4.0.5 | unsupported by peer | Transmission: unrecognized info |
+
+Unmodified upstream (`773882d6`) fails 1b, 3b and 7b, the three scenarios in which qBittorrent
+downloads a v2-only torrent from rqbit; the rest are the same. 9a is not a failure: it records
+that Transmission refuses a v2-only torrent.
+
+Limits of this matrix:
+
+- qBittorrent 4.6.3 is the Ubuntu 24.04 package. qBittorrent 5.x was not tested; it uses the same
+  libtorrent 2.0 line.
+- Transmission 4.0.5 does not support v2 (scenario 9a), so it only ever plays the v1-only peer.
+- Torrents "made by qBittorrent" are made with libtorrent 2.0.10's creator through its Python
+  bindings, because qbittorrent-nox 4.6 cannot create torrents without its GUI.
+- In 4c rqbit took all its data from one of the two seeds; nothing forces it to use both.
+- "Seeding for days" was not tested. The restart scenarios use a 2 GiB store; a 10 GiB one is
+  below.
+- Loopback only: no NAT, no uTP, no encryption-required peers.
+
+Restart on a larger store, measured separately on the 10 GiB store (201 files, hybrid, 1 MiB
+pieces): the first check of the existing folder took 21.8 s; coming back took 0.7 s after a clean
+stop and 0.7 s after `kill -9`, process start included. The session was started with
+`--fastresume` and a persistence folder.
+
+## 5. Open problems and known deviations from BEP 52
+
+From reading the upstream code in the first session (a delegated review; I re-read the code
+behind the first two). None is confirmed by a failing test yet.
+
+1. **An inconsistent hybrid piece (SHA-1 passes, Merkle fails, or the reverse) appears to stall
+   the download** instead of failing the torrent. This is the attack BEP 52 warns about for
+   hybrids. Needs a test, then a fix.
+2. The length of a hybrid's v1 `pieces` is not checked against the file layout (nor is it for v1
+   torrents on upstream `main`).
+3. **Verification is per piece, not per 16 KiB block.** A bad piece is downloaded again whole and
+   the peer that completed it is dropped, as in v1. Hash requests below the piece layer, and for
+   files of one piece, are refused; qBittorrent did not need them in any scenario here.
+4. The order of file tree keys is not validated when a torrent is loaded.
+5. Parse-then-serialize keeps only the fields rqbit knows. The raw info dictionary is kept, so
+   info hashes and metadata exchange are byte-exact, but an unknown top-level key is lost if rqbit
+   rewrites a `.torrent`.
+6. Restart trusts a stored bitfield after checking one piece per file plus 64 random pieces; file
+   modification times are not used. A failed sample means a full rehash.
+7. Web seeds: a v2-only single-file torrent probably gets the wrong URL, and a v2 torrent added
+   by magnet link with web seeds but no peers cannot fetch anything larger than one piece (web
+   seeds cannot supply piece layers). JETCARP's torrents carry their piece layers, so only the
+   magnet-only case matters.
+8. There are now two creators in the tree: upstream's `librqbit::create_torrent` (async, takes a
+   folder) and our crate. Scenario 1d checks they make the same torrent. `librqbit`'s could be
+   made a wrapper around the crate.
+9. Transmission 4.0 treats padding files as real files: it writes a `.pad` folder next to the
+   data. Harmless, but users will see it.
+
+Not verified at all: Windows, macOS and aarch64 builds and tests; long-running seeding; behaviour
+behind NAT; rate limits; the HTTPS tracker path.
+
+## 6. Embedding (handoff 4.3)
+
+**Cargo features for JETCARP:**
+
+```toml
+librqbit = { git = "https://github.com/jprodgers/rqbit", branch = "claude/kind-fermi-dx3tx8", default-features = false, features = ["rust-tls"] }
+```
+
+That gives a downloader and seeder with rustls for HTTPS trackers and web seeds, no OpenSSL, no
+web UI, no HTTP API, no npm. It is not pure Rust: rustls's cryptography (`aws-lc-rs`) is C and
+assembly, so building needs a C compiler and CMake (and NASM on some Windows targets). See
+decision 5.
+
+The API, by name (all exist on this branch; I have not yet driven them from a host program):
+
+| Need | API |
 | --- | --- |
 | Add from bytes or magnet, output folder, files selected | `Session::add_torrent(AddTorrent::TorrentFileBytes / Url, AddTorrentOptions { output_folder, only_files, overwrite, paused, .. })` |
-| Seed an existing folder | Same, with `overwrite: true` (maintainer's answer in issue 509) |
+| Seed an existing folder | The same with `overwrite: true`; `skip_initial_check: true` trusts file lengths |
 | Pause, resume | `Session::pause`, `Session::unpause` |
-| Rate limits | `SessionOptions::ratelimits` (global) and `AddTorrentOptions::ratelimits` (per torrent, set when adding). Changing a torrent's limits later is pull request 745 |
-| Listen port, UPnP | `SessionOptions::listen` (`ListenerOptions`) |
-| Progress and peer statistics | `ManagedTorrent::stats()` |
+| Rate limits | `SessionOptions::ratelimits` (global), `AddTorrentOptions::ratelimits` (per torrent, at add time) |
+| Listen port, UPnP | `SessionOptions::listen` |
+| Progress and peer statistics | `ManagedTorrent::stats()`, `api::Api::api_peer_stats` |
 | Remove with or without data | `Session::delete(id, delete_files)` |
-| Restart without rehash | `SessionOptions::fastresume` with `persistence`; the maintainer calls it reliable but it is not the default |
+| Restart without rehash | `SessionOptions::fastresume` with `persistence` |
+| Recheck on demand | `Session::force_recheck` |
 | Clean stop | `Session::stop().await`, or cancel `SessionOptions::cancellation_token` |
 
-A host that runs its own threads needs a Tokio multi-thread runtime for the session: create one
-`tokio::runtime::Runtime` on a dedicated thread, `block_on` the session there, and stop by calling
-`Session::stop()` and then dropping the runtime. I have not yet verified this end to end or on
-Windows and macOS; that is work for the embedding step.
+A host that runs its own threads should give the session its own Tokio multi-thread runtime on a
+dedicated thread, `block_on` the session's work there, and stop with `Session::stop()` before
+dropping the runtime. This is the next thing to write and test as a small example program.
 
-Minimum Rust version: upstream CI checks 1.94 and 1.97.
+## 7. Decisions
 
-### 3.4 Code review of pull request 748
+Taken by Jimmie: C first, validate and use A, fall back to B only if needed (it was not); do not
+post upstream; work in this repository.
 
-A read of the v2 commits (`2f58b27e..fc1147cb` in the pull request's branch), done by a delegated
-review pass against the handoff's checklist. I re-read the code behind the first two concerns
-myself; the rest I have not independently confirmed. File references are to that branch.
+Still open, both with a default already in place:
 
-**Looks right against BEP 52:**
+4. **Last-file padding rule.** In a hybrid torrent the old-style half sees all files as one long
+   stream, so zero-filled padding files are inserted to make each file start on a piece
+   boundary. The specification does not say whether one follows the last file, and the choice
+   changes the torrent's identity: the same data would get different info hashes under the two
+   rules, and so two swarms that cannot help each other. The crate does what libtorrent and
+   qBittorrent do (pad the last file too, except in a one-file torrent), so anyone who makes a
+   torrent of the same files with qBittorrent gets JETCARP's hashes. **Unless you object, this
+   is settled; JETCARP's format documentation should state it.**
+5. **Pure-Rust hashing in the client.** rqbit hashes with OpenSSL by default, or with `aws-lc-rs`
+   under `rust-tls`; both are C libraries. For creation this is solved: our crate hashes in pure
+   Rust at the same speed on current CPUs. For the embedded client it would not remove the C
+   dependency, because HTTPS itself needs `aws-lc-rs`. It would only matter if JETCARP had to
+   build on machines without a C compiler, or dropped HTTPS trackers and web seeds. **I suggest
+   leaving it until building on Windows or macOS shows a real problem.**
 
-- Metainfo: `meta version` must be 2; file tree leaves under the `""` key; `pieces root` required
-  for non-empty files and refused for empty ones; `piece layers` outside the info dictionary; piece
-  length a power of two of at least 16 KiB; v2 info hash is SHA-256 of the raw info bytes, with the
-  raw bytes kept, so hashing and metadata exchange are byte-exact.
-- Merkle: 16 KiB leaves, zero-hash leaf padding, and the correct padding above the piece layer
-  (the root of an all-zero piece, not 32 zero bytes). Each piece layer is checked against its root
-  on load. Files of one piece or less verify against the root directly.
-- Peer protocol: reserved bit `reserved[7] & 0x10`; message ids 21, 22, 23 with the BEP's field
-  layout; hybrid connections upgrade to the v2 hash; hash messages on a non-v2 connection
-  disconnect the peer; fetched layers are verified chunk by chunk against the root.
-- Swarms: trackers, DHT and local discovery run per hash; a hybrid announces under both.
-- Sizes: lengths and offsets are `u64` with checked arithmetic. The hard limit is about 64 TiB of
-  piece space per torrent, from 32-bit chunk indices.
+## 8. What I would do next
 
-**Concerns, most serious first:**
+1. A small host-program example for embedding (start, add, select files, progress, stop), run on
+   Linux; then CI for Windows and macOS on this fork, since nothing has been built there.
+2. Tests for the open problems in section 5, starting with the inconsistent hybrid piece, and
+   fixes for those that fail.
+3. Web seeds with JETCARP's layout: a torrent from the crate with `url-list`, served from a
+   static host, downloaded with and without peers. Upstream's own web seed tests pass, but our
+   harness does not cover web seeds yet.
+4. A long-running seeding test with restarts on a store of realistic size.
+5. Make `librqbit`'s creator call the crate, so there is one implementation.
 
-1. **A hybrid piece whose SHA-1 passes and Merkle hash fails (or the reverse) appears to stall the
-   download instead of failing the torrent.** `check_piece` returns an error for that case
-   (`file_ops.rs:232`); the caller propagates it with `?` (`torrent_state/live/mod.rs:2019`) after
-   the piece was taken out of the in-flight set, so it is neither marked failed nor queued again.
-   This is exactly the inconsistent-hybrid attack the BEP warns about. Needs a test to confirm.
-2. **The length of a hybrid's v1 `pieces` is never checked against the layout.** A short `pieces`
-   leads into the path in point 1. `main` has the same gap for v1 torrents, so this is inherited
-   rather than introduced.
-3. **Verification is per piece only.** No block-level hashes are kept or served: hash requests
-   below the piece layer are refused, as are requests for files of one piece. On a failed piece the
-   whole piece is downloaded again and the peer that completed it is disconnected, the same as v1.
-   The handoff's "16 KiB verification granularity" is not delivered. Whether libtorrent ever needs
-   the refused request shapes from a seed is not confirmed; the pull request's own interop tests
-   are said to pass without them.
-4. **File tree key order is not validated.** An unsorted tree is accepted and its files take
-   dictionary order, which can differ from clients that sort.
-5. **Re-encoding drops unknown keys.** The raw info bytes are kept, so hashes are safe, but
-   parse-then-serialize of the typed structure is only byte-exact for the fields it knows. Byte
-   equality is tested on four libtorrent fixtures only.
-6. **Resource use:** a missing piece layer is allocated up front from sizes in magnet metadata;
-   for very large files the answer to a hash request rebuilds the tree per request.
-7. **Web seeds:** a v2-only single-file torrent probably gets the wrong URL (the worker decides
-   "single file" from the v1 `length` key, `webseed/worker.rs:485`). And a magnet-added v2 torrent
-   with only web seeds cannot fetch anything larger than one piece, since web seeds cannot supply
-   piece layers.
+## 9. What is on this branch
 
-**Changes to v1 behaviour beyond what the description lists:** the read, write and check loops in
-`file_ops.rs` are rewritten for all torrents; progress no longer counts BEP 47 padding; the
-32-bit chunk limit is now enforced for v1 too; the stored `.torrent` is rewritten when its size
-changes.
+| Commits | What |
+| --- | --- |
+| `2af5d8bf` | `scripts/bep52/bep52_ref.py`, an independent Python reference, and a cross-check against libtorrent |
+| `f15c4c78` | `crates/create_torrent` with libtorrent fixtures |
+| `d28c6ec8`, `ca27bf9a` | The interop harness and test-store generator |
+| `2c0d9b8e`, `c07639ee` | Merge of upstream pull requests 750, 748, 740, 739, 736, 721 (author: zerx-lab) |
+| `d1a5c156` | Fix: zero-padded block requests from libtorrent 2.0 |
+| `5e7180bd`, `60deea66` | Fix: start on hosts without IPv6 |
 
-**Restart behaviour** (handoff: "must not rehash terabytes"): fastresume keeps a bitfield and on
-restart checks one claimed piece per file plus up to 64 random ones; any failure triggers a full
-rehash. `skip_initial_check` trusts file lengths only. Modification times are not used. Fetched
-piece layers are saved at most every 30 seconds, so a crash in that window makes the next start
-distrust the bitfield. For a multi-terabyte seed this is probably acceptable but is weaker than
-"sizes and modification times", and a full rehash is one failed sample away.
-
-**Tests:** four fixture torrents from libtorrent 2.1.1 with a committed generator script; unit
-tests for Merkle and message geometry; loopback end-to-end tests for download, seed, restart,
-corruption, magnets and hash exchange; eight interop tests against libtorrent's Python bindings,
-ignored by default and so not run in CI. No qBittorrent, no Transmission, no torrents from the
-wild.
-
-**What a maintainer would likely push back on:** the size; v2 fields living inside the
-`TorrentMetaV1*` types; the piece and chunk index scheme for v2-only torrents (unused index holes
-after each file's short last piece); two connection attempts per hybrid peer; interop tests
-outside CI; three BEP 52 error variants still unused.
-
-## 4. The reference script, and one finding about determinism
-
-`scripts/bep52/bep52_ref.py` builds hybrid and v2-only torrents from the BEP text with only the
-Python standard library. `scripts/bep52/crosscheck_libtorrent.py` compares it with libtorrent
-2.1.1 (`pip install libtorrent`) on a tree shaped like a JETCARP store, 28 files with sizes chosen
-to hit the edges: 0 bytes, 1 byte, one byte either side of a block and of a piece, exact multiples,
-and several pieces. For piece lengths of 16, 64 and 256 KiB, hybrid and v2-only:
-
-- the v1 and v2 info hashes equal libtorrent's;
-- libtorrent loads the reference's `.torrent` and reports the same `pieces root` for every file;
-- the reference's checker accepts libtorrent's `.torrent`;
-- reversing the input list gives byte-identical output;
-- single-file torrents, and a folder holding one file, also match.
-
-All 33 checks pass. Run it with:
-
-```bash
-python3 -m venv /tmp/lt && /tmp/lt/bin/pip install libtorrent
-```
-
-```bash
-/tmp/lt/bin/python scripts/bep52/crosscheck_libtorrent.py
-```
-
-Not yet covered: files over 4 GiB (the script handles them but is slow, about 100 to 300 MiB/s),
-and 100,000 files.
-
-**Finding: "same data gives the same info hash" needs one more rule than the BEP gives.** In a
-hybrid torrent the v1 file list, padding files included, is inside the info dictionary, so it
-changes *both* info hashes. BEP 52 does not say whether a padding file follows the last file.
-libtorrent pads the last file by default and has a flag (`canonical_files_no_tail_padding`) not
-to; it never pads a torrent of one file. Two correct creators can therefore produce different info
-hashes for the same files. JETCARP should fix the rule in its own format documentation. The
-reference and pull request 750 both follow libtorrent's default (pad after every file that does
-not end on a piece boundary, the last one too, unless the torrent has one file), which is what
-qBittorrent produces. v2-only torrents have no such ambiguity. The per-file `pieces root` never
-depends on any of this, only on the file's bytes: it does not even depend on the piece length.
-
-## 5. Options
-
-**A. Build on the open pull requests.** Take the head of pull request 750 into a fork branch, test
-it hard against section 4 of the handoff (interop with qBittorrent and Transmission, the
-JETCARP-shaped store, restart behaviour), and send fixes and review comments to those pull
-requests.
-Fastest route to a working client, and it helps upstream rather than competing. But the fork would
-carry about 23,000 lines that nobody upstream has reviewed, from an author with no merged features
-in this project, and section 2.2 says it will not be merged in this shape. If it is split and
-reworked, the fork follows a moving target.
-
-**B. Our own small slices, in the maintainer's order.** Parse and validate v2 and hybrid metainfo
-first (with only the Merkle code that piece-layer validation needs), then creation, then on-disk
-verification, then the peer protocol; each about 500 lines, each used by something on arrival.
-This is the handoff's section 6 with the order changed to fit "no dead code".
-The most likely to be merged, and the slowest: many review rounds with a maintainer who has little
-time, and it duplicates work that now exists in pull request 748. It should not start without a
-comment on issue 546 first, so that three people are not writing the same parser.
-
-**C. Decouple v0.6.0 from rqbit.** JETCARP v0.6.0 only *writes* torrents. That needs no client and
-little code: the reference script's logic is about 150 lines, and in Rust it needs only `sha1`,
-`sha2` and a bencode writer. JETCARP can carry that itself, sync and pure Rust, taking exactly the
-input it wants (a list of path and file pairs), and test it against `bep52_ref.py` and libtorrent.
-Nothing upstream offers that shape today (section 3.1), and none of the open work is needed for it.
-The embedded client for v0.7.0 is then decided later, when it is clearer what upstream does with
-the open pull requests.
-
-**My recommendation: C now, then a light version of A.** C removes the only time pressure. For the
-client, the useful contribution at this moment is not more code but evidence: run the interop
-matrix and the JETCARP-shaped tests against pull request 750's head, and report results and
-concrete bugs on those pull requests and on issue 546. That is the review help a maintainer short
-of time needs, it tells us whether that code is good enough to depend on, and it keeps option B
-open if the open pull requests go nowhere. I would not start B today.
-
-## 6. Decisions for Jimmie
-
-1. **Which option** (section 5).
-2. **May a later session build and run the code of pull requests 748 and 750?** Needed for option
-   A and for my recommendation. It is third-party code that no maintainer has reviewed; it would
-   run in the session's cloud container, not on your machine. This session declined to run it
-   without your say-so.
-3. **Post on issue 546?** A draft is in section 8. Per the maintainer's AI policy it should be in
-   your words and state the AI involvement; treat the draft as notes.
-4. **Tail padding rule** for JETCARP hybrids (section 4): I suggest libtorrent's default.
-5. **A `sha1-rustcrypto` feature** in `sha1w`, selectable without a TLS feature (section 3.3). It
-   adds a public feature and two dependencies (`sha1`, `sha2`), so I did not add it unasked. It is
-   about 60 lines and could be offered upstream alone with the benchmark table.
-6. **Where a creation function should live** if we write one in this repository rather than in
-   JETCARP: `librqbit-core` is the smallest crate that has the metainfo types and bencode. It still
-   depends on Tokio (as a library, no runtime needed) and on a SHA backend feature.
-
-## 7. Interop matrix
-
-Not run. No v2-capable rqbit was built in this session (section 3), so there is nothing to
-report except the creation cross-check:
-
-| Scenario | Peer | Result |
-| --- | --- | --- |
-| Reference creates hybrid and v2-only torrents; info hashes and roots compared | libtorrent 2.1.1 (Python bindings) | Pass, 33 of 33 checks |
-| Handoff scenarios 1 to 7 and the JETCARP-shaped store | qBittorrent, Transmission | Not run |
-
-In this environment `pip install libtorrent` works (2.1.1) and Docker is installed;
-`qbittorrent-nox` and Transmission are not installed and I have not yet tried to get them.
-
-## 8. Draft texts for upstream
-
-Nothing here has been posted. Both are notes for Jimmie to rewrite, not text to paste.
-
-### 8.1 Comment for issue 546 (the v2 design thread), instead of a new issue
-
-> I maintain a research-data project (JETCARP) that wants to publish content-addressed archives as
-> hybrid v1+v2 torrents and later embed librqbit, so I have a concrete use for BEP 52: per-file
-> roots that stay the same across versions of a dataset.
->
-> I see #748 and #750 now cover most of this, and I have read the earlier feedback here and on
-> #554 and #568 about small pieces, no dead code, and starting from metainfo parsing. I don't want
-> to add a third implementation. What I can offer instead:
->
-> - a stdlib-only Python reference for v2/hybrid creation that matches libtorrent 2.1.1's info
->   hashes on edge-case file sizes, usable as a test oracle;
-> - interop testing of whichever branch you prefer against qBittorrent and Transmission, with a
->   scripted harness, and bug reports from that;
-> - if it helps, small (about 500 line) slices in the order you described in #568, starting with
->   v2/hybrid metainfo parsing and validation.
->
-> Which of these would be useful to you? And is #748 something you would want split up, or
-> reviewed as it is?
->
-> Disclosure: I work with an AI model (Claude Code) on this; the reference script and the survey
-> behind this comment were produced that way and checked by me.
-
-### 8.2 Comment for issue 634 (SHA backend), if decision 5 is yes
-
-> Some numbers that may be useful here, 16 KiB blocks, single thread, Xeon with SHA extensions:
-> RustCrypto `sha1` 0.10 does 1,355 MiB/s, `aws-lc-rs` 1,175, `ring` 0.17 only 355 for SHA-1
-> (SHA-256 is about 1,250 for all three). With hardware SHA disabled RustCrypto drops to 515
-> (SHA-1) and 245 (SHA-256). So moving `sha1-ring` to `ring` would cost a lot of v1 hashing speed,
-> and a RustCrypto backend is no longer slow on current CPUs. I can send a small PR adding an
-> opt-in `sha1-rustcrypto` feature that is independent of the TLS feature, if you'd take it.
-
-## 9. If the answer is "go ahead with B": the slice plan
-
-Each slice is used on arrival and keeps v1 unchanged. Sizes are targets.
-
-1. Parse v2 fields (`meta version`, `file tree`, top-level `piece layers`; `pieces` optional),
-   compute the v2 info hash from the raw info bytes, validate (piece length, tree shape, piece
-   layers against roots, hybrid v1/v2 agreement). First user: `rqbit` can list a v2 torrent and
-   reject a bad one. The existing unused error variants get their users here.
-2. Creation of v2 and hybrid torrents as a sync function in `librqbit-core`, wrapped by the
-   existing async `create_torrent`. First user: `rqbit share`.
-3. Verify data on disk for v2 and hybrid (initial check, piece check on download) using piece
-   layers from the `.torrent`. First user: seeding and downloading a v2 `.torrent` over v1-style
-   connections to v2 peers.
-4. Handshake bit, truncated v2 hash for trackers, DHT and handshake, hybrid in both swarms.
-5. Hash request, hashes and hash reject; `btmh`-only magnets.
-6. Interop harness and documentation.
-
-For web seeds later (handoff 4.4): the only v2 design point that matters is that a piece of a file
-whose piece layer is not yet known cannot be verified, so neither peers nor web seeds may be asked
-for it; and that hybrid torrents must map v1 padding files to "no bytes to fetch". Pull request 748
-states it handles both.
+To re-run the checks: `cargo test` (as a non-root user, or expect the one failure described in
+section 3), `python3 scripts/bep52/crosscheck_libtorrent.py` with libtorrent's Python bindings,
+and the interop harness as its README describes.
