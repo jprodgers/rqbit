@@ -638,9 +638,15 @@ impl Session {
                 .unwrap_or_else(|| generate_azereus_style(*b"rQ", crate_version!()));
             let token = opts.cancellation_token.take().unwrap_or_default();
 
-            if !opts.ipv4_only && !ipv6_available() {
-                info!("this host has no IPv6: listening on IPv4 only");
-                opts.ipv4_only = true;
+            if !ipv6_available() {
+                if !opts.ipv4_only {
+                    info!("this host has no IPv6: listening on IPv4 only");
+                    opts.ipv4_only = true;
+                }
+                // The peer listener has an option of its own.
+                if let Some(listen) = opts.listen.as_mut() {
+                    listen.ipv4_only = true;
+                }
             }
 
             #[cfg(feature = "disable-upload")]

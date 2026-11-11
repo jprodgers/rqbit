@@ -12,6 +12,7 @@ mod e2e_v2_padded_requests;
 mod e2e_webseed;
 mod fake_peer;
 mod interop;
+mod session_start;
 pub mod test_util;
 pub(crate) mod v2_torrent;
 mod web_seed_server;
