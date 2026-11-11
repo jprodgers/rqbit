@@ -779,17 +779,22 @@ def s4c(ctx):
     return f"{n} files identical; data fetched from {used} peer(s)"
 
 
-def corrupt_copy(ctx, tag: str) -> str:
-    """A copy of the small data set with bytes flipped in its three largest
-    files (same sizes)."""
+def plain_copy(ctx, tag: str) -> str:
+    """A copy of the small data set; returns the folder holding it."""
     copy_parent = os.path.join(ctx.work, "corrupt", tag)
-    copy = os.path.join(copy_parent, os.path.basename(ctx.small.root))
-    shutil.copytree(ctx.small.root, copy)
+    shutil.copytree(ctx.small.root, os.path.join(copy_parent, os.path.basename(ctx.small.root)))
+    return copy_parent
+
+
+def corrupt(copy_parent: str) -> int:
+    """Flips bytes all through the three largest files under `copy_parent`
+    (sizes stay the same). Returns how many bytes were flipped."""
     sizes = sorted(
         ((os.path.getsize(os.path.join(d, n)), os.path.join(d, n))
-         for d, _s, names in os.walk(copy) for n in names),
+         for d, _s, names in os.walk(copy_parent) for n in names),
         reverse=True,
     )
+    flipped = 0
     for size, path in sizes[:3]:
         with open(path, "r+b") as f:
             for offset in range(0, size, max(size // 8, 1)):
@@ -797,27 +802,44 @@ def corrupt_copy(ctx, tag: str) -> str:
                 byte = f.read(1)
                 f.seek(offset)
                 f.write(bytes([byte[0] ^ 0xFF]))
-    return copy_parent
+                flipped += 1
+    return flipped
 
 
 def s5(ctx, mode: str):
     torrent = ctx.small.torrent("libtorrent", mode)
-    good = seed_with(ctx, QBittorrent, ctx.small, torrent, f"s5{mode}-good")
+    # A client that is told not to check its files checks each piece before
+    # it first uploads it (libtorrent's seed mode does), so that is no way to
+    # get corrupt bytes onto the wire. Instead the bad seed checks a good copy
+    # and the copy is damaged afterwards, under its feet. It is the only seed
+    # at first, so that rqbit has to take pieces from it.
+    copy_parent = plain_copy(ctx, f"s5{mode}")
     bad = QBittorrent(ctx, f"s5{mode}-bad", ctx.ports.take(), ctx.ports.take())
-    # The bad seed is told not to check, so it offers the corrupt bytes.
-    bad.add(torrent, corrupt_copy(ctx, f"s5{mode}"), skip_checking=True)
-    bad.wait_seeding(None, 60)
-    client, dest = download_with(ctx, Rqbit, ctx.small, torrent, f"s5{mode}-rqbit", timeout=600)
+    bad.add(torrent, copy_parent)
+    bad.wait_seeding(None, 120)
+    corrupt(copy_parent)
+    client = Rqbit(ctx, f"s5{mode}-rqbit", ctx.ports.take(), ctx.ports.take())
+    dest = os.path.join(client.base, "dl", os.path.basename(ctx.small.root))
+    torrent_id = client.add(torrent, dest)
+    wait_for(
+        "rqbit to receive a corrupt piece",
+        lambda: client.log_count("hash does not match") > 0,
+        120,
+    )
+    time.sleep(5)
+    if client.stats(torrent_id).get("finished"):
+        raise Failed("rqbit says it finished with only a corrupt seed")
+    seed_with(ctx, QBittorrent, ctx.small, torrent, f"s5{mode}-good")
+    client.wait_complete(torrent_id, 600)
     n = expect_same(ctx.small.root, dest)
     failures = client.log_count("hash does not match")
-    if failures == 0:
-        return f"{n} files identical, but rqbit never received a corrupt piece (not exercised)"
-    return f"{n} files identical; {failures} corrupt piece(s) detected and fetched again"
+    return f"{n} files identical; {failures} corrupt piece(s) rejected before a good seed joined"
 
 
 def s5a(ctx):
-    """Two qBittorrent seeds of a hybrid torrent, one with corrupted files:
-    rqbit must detect the bad pieces and still end with the right bytes."""
+    """A qBittorrent seed with corrupted files is the only seed of a hybrid
+    torrent, then a good seed joins: rqbit must reject the bad pieces and
+    end with the right bytes."""
     return s5(ctx, "hybrid")
 
 
@@ -965,8 +987,8 @@ SCENARIOS = [
     ("4a", "rqbit downloads hybrid from a v1-only seed", "Transmission {tr} seeds", s4a),
     ("4b", "rqbit seeds hybrid to a v1 and a v2 peer", "Transmission {tr} and qBittorrent {qbt} download", s4b),
     ("4c", "rqbit downloads hybrid from a v1 and a v2 seed", "Transmission {tr} and qBittorrent {qbt} seed", s4c),
-    ("5a", "rqbit downloads hybrid, one seed corrupt", "two qBittorrent {qbt} seeds", s5a),
-    ("5b", "rqbit downloads v2-only, one seed corrupt", "two qBittorrent {qbt} seeds", s5b),
+    ("5a", "rqbit downloads hybrid from a corrupt seed, then a good one", "two qBittorrent {qbt} seeds", s5a),
+    ("5b", "rqbit downloads v2-only from a corrupt seed, then a good one", "two qBittorrent {qbt} seeds", s5b),
     ("6a", "rqbit downloads some files of a hybrid", "qBittorrent {qbt} seeds", s6a),
     ("6b", "rqbit downloads some files of a v2-only", "qBittorrent {qbt} seeds", s6b),
     ("7a", "rqbit restarts while seeding (hybrid store)", "qBittorrent {qbt} downloads afterwards", s7a),
