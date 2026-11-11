@@ -269,15 +269,26 @@ impl UdpTrackerClient {
         cancel_token: CancellationToken,
         bind_device: Option<&BindDevice>,
     ) -> anyhow::Result<Self> {
+        let bind = |addr: SocketAddr| {
+            UdpSocket::bind_udp(
+                addr,
+                librqbit_dualstack_sockets::BindOpts {
+                    device: bind_device,
+                    ..Default::default()
+                },
+            )
+        };
         let addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0);
-        let sock = UdpSocket::bind_udp(
-            addr,
-            librqbit_dualstack_sockets::BindOpts {
-                device: bind_device,
-                ..Default::default()
-            },
-        )
-        .with_context(|| format!("error creating UDP socket at {addr}"))?;
+        let sock = match bind(addr) {
+            Ok(sock) => sock,
+            Err(e) => {
+                // A host without IPv6: some containers, or a kernel booted
+                // with ipv6.disable=1. IPv4 trackers still work.
+                let addr = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0);
+                debug!("error creating a dual-stack UDP socket ({e:#}), using {addr}");
+                bind(addr).with_context(|| format!("error creating UDP socket at {addr}"))?
+            }
+        };
 
         let client = Self {
             state: Arc::new(ClientShared {
@@ -426,6 +437,15 @@ mod tests {
     use crate::tracker_comms_udp::{
         AnnounceFields, EVENT_NONE, Request, Response, new_transaction_id,
     };
+
+    // The client must start whether or not the host has IPv6 (it does not in
+    // some containers and on kernels booted with ipv6.disable=1).
+    #[tokio::test]
+    async fn test_client_starts_with_or_without_ipv6() {
+        super::UdpTrackerClient::new(Default::default(), None)
+            .await
+            .unwrap();
+    }
 
     #[test]
     fn test_parse_announce() {

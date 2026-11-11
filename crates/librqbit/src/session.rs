@@ -602,6 +602,13 @@ struct InternalAddResult {
     web_seeds: Vec<String>,
 }
 
+/// Whether an IPv6 socket can be made at all. It cannot in some containers
+/// and on kernels booted with `ipv6.disable=1`; binding `[::]` there fails
+/// and would otherwise keep the session from starting.
+fn ipv6_available() -> bool {
+    std::net::UdpSocket::bind((std::net::Ipv6Addr::UNSPECIFIED, 0)).is_ok()
+}
+
 impl Session {
     /// Create a new session with default options.
     /// The passed in folder will be used as a default unless overridden per torrent.
@@ -630,6 +637,11 @@ impl Session {
                 .peer_id
                 .unwrap_or_else(|| generate_azereus_style(*b"rQ", crate_version!()));
             let token = opts.cancellation_token.take().unwrap_or_default();
+
+            if !opts.ipv4_only && !ipv6_available() {
+                info!("this host has no IPv6: listening on IPv4 only");
+                opts.ipv4_only = true;
+            }
 
             #[cfg(feature = "disable-upload")]
             if opts.disable_upload {
