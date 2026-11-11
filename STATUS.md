@@ -20,9 +20,13 @@ Both are done:
   new 21-scenario harness against qBittorrent 4.6.3 and Transmission 4.0.5 (sections 3 and 4). The branch can
   download and seed v2 and hybrid torrents, use `btmh` magnet links, and use web seeds.
 
-What is not done: nothing has been built or run on Windows or macOS; the embedding API has not
-been exercised from a host application; several weaknesses found by reading the upstream code are
-still there (section 5).
+- **The client builds with no C at all** (`pure-rust` feature, section 6): hashing in pure Rust,
+  no TLS library, and no C compiler or CMake needed on Linux, Windows or macOS. That build passes
+  the same tests and the same interop matrix.
+
+What is not done: nothing has been run on Windows or macOS (the pure-Rust build is type-checked
+for both, not executed); the embedding API has not been exercised from a host application;
+several weaknesses found by reading the upstream code are still there (section 5).
 
 ## 2. The creation crate (handoff 4.1)
 
@@ -205,21 +209,79 @@ behind the first two). None is confirmed by a failing test yet.
 9. Transmission 4.0 treats padding files as real files: it writes a `.pad` folder next to the
    data. Harmless, but users will see it.
 
-Not verified at all: Windows, macOS and aarch64 builds and tests; long-running seeding; behaviour
-behind NAT; rate limits; the HTTPS tracker path.
+Not verified at all: running anything on Windows, macOS or aarch64 (the pure-Rust build is only
+type-checked there); long-running seeding; behaviour behind NAT; rate limits; the HTTPS tracker
+path.
 
-## 6. Embedding (handoff 4.3)
+## 6. Embedding (handoff 4.3), with no C
+
+JETCARP's requirement, as of the second session: **no C in the program, no CMake.** The branch has
+a feature set for that.
 
 **Cargo features for JETCARP:**
 
 ```toml
-librqbit = { git = "https://github.com/jprodgers/rqbit", branch = "claude/kind-fermi-dx3tx8", default-features = false, features = ["rust-tls"] }
+[dependencies]
+librqbit = { git = "https://github.com/jprodgers/rqbit", branch = "claude/kind-fermi-dx3tx8", default-features = false, features = ["pure-rust"] }
+
+# Needed on macOS and the BSDs only, harmless elsewhere; see below.
+[patch.crates-io]
+network-interface = { git = "https://github.com/jprodgers/rqbit", branch = "claude/kind-fermi-dx3tx8" }
 ```
 
-That gives a downloader and seeder with rustls for HTTPS trackers and web seeds, no OpenSSL, no
-web UI, no HTTP API, no npm. It is not pure Rust: rustls's cryptography (`aws-lc-rs`) is C and
-assembly, so building needs a C compiler and CMake (and NASM on some Windows targets). See
-decision 5.
+What `pure-rust` is:
+
+- **Hashing** by the RustCrypto `sha1` and `sha2` crates, through a new `sha1-rustcrypto` backend
+  in `sha1w`. The same known-answer tests run on all three backends.
+- **No TLS library.** Peers, the DHT, UDP trackers, HTTP trackers and HTTP web seeds work. An
+  `https://` tracker or web seed fails with an error in the log ("scheme is not http"); nothing
+  panics. BitTorrent itself never needed TLS: pieces are verified by hash whoever sends them.
+- No web UI, HTTP API, npm, OpenSSL, `aws-lc-rs`, `ring` or CMake.
+
+How it was checked:
+
+| Check | Result |
+| --- | --- |
+| Full build of `librqbit` and of the `rqbit` binary on Linux x86-64 with `CC` and `CXX` pointing at a program that fails and logs | Builds; the compiler was never called |
+| `cc`, `cmake`, `ring`, `aws-lc`, `openssl` in the dependency tree | None |
+| `librqbit` tests on this feature set | 199 pass; the one failure is the root-only test of section 3 |
+| libtorrent 2.1.1 interop tests on this feature set | 16 of 16 |
+| The interop matrix of section 4 with the pure-Rust `rqbit` | No failures, same as the default build |
+| `cargo check` for `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-pc-windows-msvc`, `x86_64-pc-windows-gnu`, `aarch64-unknown-linux-gnu`, compiler disabled | All pass |
+| A separate project depending on this branch by git with the two entries above, compiler disabled | Builds and runs on Linux; type-checks for macOS and Windows; `network-interface` resolves to the vendored copy |
+
+The last row is type-checking only. **Nothing has been linked or run on macOS or Windows.**
+
+Three things to be straight about:
+
+1. **Speed.** What I measured in the first session: on a CPU with SHA instructions, RustCrypto
+   does 1,355 MiB/s for SHA-1 and 1,245 MiB/s for SHA-256, against 1,175 and 1,260 for the C
+   library `aws-lc-rs`; Python's OpenSSL-backed hashing measured about the same. So on current
+   x86-64 it is as fast as C. With those instructions disabled it drops to 515 and 245 MiB/s. That
+   is what old CPUs get (Intel desktop before about 2021, AMD before 2017). A C library is slower
+   there too, and I did not measure by how much, so I cannot say how big the gap is on such
+   machines; expect checking data to be slower than with C. I have not measured ARM.
+2. **The one C file that was left.** A dependency of rqbit's networking crates
+   (`network-interface`) compiles one C function on macOS and the BSDs: a single pointer-offset
+   macro. `vendor/network-interface` is that crate with the function written in Rust; nothing
+   else differs. Cargo only applies such a substitution from the top-level project, which is why
+   JETCARP's `Cargo.toml` needs the `[patch.crates-io]` lines above. Without them a Mac build
+   compiles that one C file with the system compiler (no CMake). The Rust version is unrun.
+3. **A C toolchain is not the same as C code.** Rust itself links with the platform linker
+   (`cc`/`ld` on Linux and macOS, the MSVC linker or MinGW on Windows) and against the system C
+   library. That is true of every Rust program, JETCARP included, and is not changed by any of
+   this.
+
+**If JETCARP needs HTTPS inside the client** (HTTPS trackers, or web seeds on the HTTPS static
+host): use `pure-rust-tls-no-provider` instead of `pure-rust`. It adds rustls with no
+cryptography in it, and the application installs a provider of its choice
+(`rustls::crypto::CryptoProvider::install_default`) before creating the session; without one,
+creating a session returns an error that says so. I tried this outside the repository with the
+RustCrypto provider, `rustls-rustcrypto`: it compiled with the C compiler disabled and completed
+a real HTTPS request against a local test server. But that crate is a pre-release
+(`0.1.0-pre.0`), and I know of no audit of it, so I have not made it a dependency. Whatever
+JETCARP uses for its own HTTPS downloads is the natural thing to install here; if that is not
+rustls, tell me what it is.
 
 The API, by name (all exist on this branch; I have not yet driven them from a host program):
 
@@ -255,17 +317,15 @@ Still open, both with a default already in place:
    qBittorrent do (pad the last file too, except in a one-file torrent), so anyone who makes a
    torrent of the same files with qBittorrent gets JETCARP's hashes. **Unless you object, this
    is settled; JETCARP's format documentation should state it.**
-5. **Pure-Rust hashing in the client.** rqbit hashes with OpenSSL by default, or with `aws-lc-rs`
-   under `rust-tls`; both are C libraries. For creation this is solved: our crate hashes in pure
-   Rust at the same speed on current CPUs. For the embedded client it would not remove the C
-   dependency, because HTTPS itself needs `aws-lc-rs`. It would only matter if JETCARP had to
-   build on machines without a C compiler, or dropped HTTPS trackers and web seeds. **I suggest
-   leaving it until building on Windows or macOS shows a real problem.**
+5. **Pure-Rust hashing in the client.** Decided by Jimmie: no C at all, or no client. Done: see
+   section 6. What remains open under it is whether JETCARP wants HTTPS inside the torrent
+   client, and with which TLS code.
 
 ## 8. What I would do next
 
-1. A small host-program example for embedding (start, add, select files, progress, stop), run on
-   Linux; then CI for Windows and macOS on this fork, since nothing has been built there.
+1. CI on this fork that builds and tests the `pure-rust` feature set on Windows and macOS, since
+   it has only been type-checked there; and a small host-program example for embedding (start,
+   add, select files, progress, stop).
 2. Tests for the open problems in section 5, starting with the inconsistent hybrid piece, and
    fixes for those that fail.
 3. Web seeds with JETCARP's layout: a torrent from the crate with `url-list`, served from a
@@ -284,6 +344,7 @@ Still open, both with a default already in place:
 | `2c0d9b8e`, `c07639ee` | Merge of upstream pull requests 750, 748, 740, 739, 736, 721 (author: zerx-lab) |
 | `d1a5c156` | Fix: zero-padded block requests from libtorrent 2.0 |
 | `5e7180bd`, `60deea66` | Fix: start on hosts without IPv6 |
+| `0dae4de4` | The `pure-rust` build: RustCrypto hashing backend, features, and the vendored `network-interface` without its C file |
 
 To re-run the checks: `cargo test` (as a non-root user, or expect the one failure described in
 section 3), `python3 scripts/bep52/crosscheck_libtorrent.py` with libtorrent's Python bindings,
