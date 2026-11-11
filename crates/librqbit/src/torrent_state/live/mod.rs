@@ -214,6 +214,7 @@ pub struct TorrentStateLive {
     ratelimit_upload_tx: tokio::sync::mpsc::UnboundedSender<(
         tokio::sync::mpsc::UnboundedSender<WriterRequest>,
         ChunkInfo,
+        u32,
     )>,
     ratelimits: Limits,
 
@@ -267,6 +268,7 @@ impl TorrentStateLive {
         let (ratelimit_upload_tx, ratelimit_upload_rx) = tokio::sync::mpsc::unbounded_channel::<(
             tokio::sync::mpsc::UnboundedSender<WriterRequest>,
             ChunkInfo,
+            u32,
         )>();
         let ratelimits = Limits::new(paused.shared.options.ratelimits);
 
@@ -456,9 +458,10 @@ impl TorrentStateLive {
         mut rx: tokio::sync::mpsc::UnboundedReceiver<(
             tokio::sync::mpsc::UnboundedSender<WriterRequest>,
             ChunkInfo,
+            u32,
         )>,
     ) -> crate::Result<()> {
-        while let Some((tx, ci)) = rx.recv().await {
+        while let Some((tx, ci, wire_size)) = rx.recv().await {
             tokio::select! {
                 _ = tx.closed() => {
                     continue;
@@ -477,7 +480,7 @@ impl TorrentStateLive {
                     }
                 }
             }
-            let _ = tx.send(WriterRequest::ReadChunkRequest(ci));
+            let _ = tx.send(WriterRequest::ReadChunkRequest(ci, wire_size));
         }
         Ok(())
     }
@@ -1548,11 +1551,20 @@ impl PeerHandler {
             }
         };
 
-        let chunk_info = match self.state.lengths.chunk_info_from_received_data(
-            piece_index,
-            request.begin,
-            request.length,
-        ) {
+        let chunk_info = match self
+            .state
+            .lengths
+            .chunk_info_from_received_data(piece_index, request.begin, request.length)
+            // libtorrent 2.0 (every released qBittorrent) treats the last
+            // piece of a file of a v2 torrent as a whole piece padded with
+            // zeros, and asks for the whole 16 KiB block the file ends in.
+            .or_else(|| {
+                self.state.lengths.chunk_info_from_padded_request(
+                    piece_index,
+                    request.begin,
+                    request.length,
+                )
+            }) {
             Some(d) => d,
             None => {
                 anyhow::bail!(
@@ -1576,7 +1588,7 @@ impl PeerHandler {
 
         self.state
             .ratelimit_upload_tx
-            .send((self.tx.clone(), chunk_info))?;
+            .send((self.tx.clone(), chunk_info, request.length))?;
         Ok(())
     }
 

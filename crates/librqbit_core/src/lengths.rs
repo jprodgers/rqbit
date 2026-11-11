@@ -375,6 +375,33 @@ impl Lengths {
         }
         Some(chunk_index * CHUNK_SIZE)
     }
+    /// The chunk a peer means when it asks for a whole 16 KiB block where a
+    /// short piece (the last piece of a file of a v2 torrent) has fewer bytes
+    /// left: the bytes that are there. libtorrent 2.0 treats such a piece as
+    /// a whole piece padded with zeros and expects the block zero padded.
+    pub fn chunk_info_from_padded_request(
+        &self,
+        piece_index: ValidPieceIndex,
+        begin: u32,
+        length: u32,
+    ) -> Option<ChunkInfo> {
+        if !self.has_short_pieces() || length != CHUNK_SIZE {
+            return None;
+        }
+        let index = begin / CHUNK_SIZE;
+        let size = self.chunk_size(piece_index, index)?;
+        if size >= length || self.chunk_offset_in_piece(piece_index, index)? != begin {
+            return None;
+        }
+        Some(ChunkInfo {
+            piece_index,
+            chunk_index: index,
+            size,
+            offset: begin,
+            absolute_index: self.chunks_per_piece * piece_index.get() + index,
+        })
+    }
+
     pub fn chunk_size(&self, piece_index: ValidPieceIndex, chunk_index: u32) -> Option<u32> {
         let piece_length = self.piece_length(piece_index);
         let last_chunk_id = piece_length.div_ceil(CHUNK_SIZE).checked_sub(1)?;
@@ -968,6 +995,44 @@ mod tests {
         // itself is a position with nothing left, as for v1 torrents).
         assert_eq!(l.compute_current_piece(5000, 0).unwrap().piece_remaining, 0);
         assert!(l.compute_current_piece(5001, 0).is_none());
+    }
+
+    #[test]
+    fn test_padded_request_for_the_block_a_file_ends_in() {
+        let pl = 4 * CHUNK_SIZE;
+        // A file of a piece, a block and a byte; and a file of 3 bytes.
+        let l = Lengths::new_aligned([u64::from(pl + CHUNK_SIZE + 1), 3], pl).unwrap();
+        let p = |i| l.validate_piece_index(i).unwrap();
+        let padded = |piece, begin, len| l.chunk_info_from_padded_request(p(piece), begin, len);
+
+        // Whole blocks that exist are ordinary requests, not padded ones.
+        assert!(padded(0, 0, CHUNK_SIZE).is_none());
+        assert!(padded(1, 0, CHUNK_SIZE).is_none());
+        // The block the first file ends in has one byte.
+        let c = padded(1, CHUNK_SIZE, CHUNK_SIZE).unwrap();
+        assert_eq!((c.size, c.offset, c.chunk_index), (1, CHUNK_SIZE, 1));
+        assert_eq!(
+            Some(c.absolute_index),
+            l.chunk_info_from_received_data(p(1), CHUNK_SIZE, 1)
+                .map(|c| c.absolute_index)
+        );
+        // The second file is three bytes of one block.
+        assert_eq!(padded(2, 0, CHUNK_SIZE).unwrap().size, 3);
+        // Not: a block past the data, an offset inside a block, another length.
+        assert!(padded(1, 2 * CHUNK_SIZE, CHUNK_SIZE).is_none());
+        assert!(padded(2, CHUNK_SIZE, CHUNK_SIZE).is_none());
+        assert!(padded(1, CHUNK_SIZE + 1, CHUNK_SIZE).is_none());
+        assert!(padded(1, CHUNK_SIZE, CHUNK_SIZE - 1).is_none());
+        assert!(padded(1, CHUNK_SIZE, 2 * CHUNK_SIZE).is_none());
+
+        // A v1 layout has no padding to ask for: its short last piece is the
+        // end of the torrent.
+        let v1 = Lengths::new(u64::from(pl) + 5, pl).unwrap();
+        let last = v1.validate_piece_index(1).unwrap();
+        assert!(
+            v1.chunk_info_from_padded_request(last, 0, CHUNK_SIZE)
+                .is_none()
+        );
     }
 
     #[test]

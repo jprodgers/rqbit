@@ -70,7 +70,9 @@ pub enum WriterRequest {
     UtPex(UtPex<ByteBufOwned>),
     /// BEP 52: the answer to a hash request (the borrowed form cannot be `'static`).
     Hashes(Hashes<ByteBufOwned>),
-    ReadChunkRequest(ChunkInfo),
+    /// The chunk to read, and how many bytes to send for it: more than the
+    /// chunk has when the peer asked for the zero padding after a short piece.
+    ReadChunkRequest(ChunkInfo, u32),
     Disconnect(anyhow::Result<()>),
 }
 
@@ -550,7 +552,7 @@ impl<H: PeerConnectionHandler> PeerConnection<H> {
                     }
                     WriterRequest::Hashes(hashes) => Message::Hashes(hashes.as_borrowed())
                         .serialize(&mut *write_buf, ext_msg_ids)?,
-                    WriterRequest::ReadChunkRequest(chunk) => {
+                    WriterRequest::ReadChunkRequest(chunk, wire_size) => {
                         #[allow(unused_mut)]
                         let mut skip_reading_for_e2e_tests = false;
 
@@ -583,17 +585,23 @@ impl<H: PeerConnectionHandler> PeerConnection<H> {
                         }
 
                         // this whole section is an optimization
-                        let preamble_len = serialize_piece_preamble(&chunk, &mut *write_buf);
-                        let full_len = preamble_len + chunk.size as usize;
+                        let on_wire = ChunkInfo {
+                            size: wire_size.max(chunk.size),
+                            ..chunk
+                        };
+                        let preamble_len = serialize_piece_preamble(&on_wire, &mut *write_buf);
+                        let data_end = preamble_len + chunk.size as usize;
+                        let full_len = preamble_len + on_wire.size as usize;
                         if !skip_reading_for_e2e_tests {
                             self.spawner
                                 .block_in_place_with_semaphore(|| {
                                     self.handler
-                                        .read_chunk(&chunk, &mut write_buf[preamble_len..full_len])
+                                        .read_chunk(&chunk, &mut write_buf[preamble_len..data_end])
                                 })
                                 .await
                                 .map_err(Error::ReadChunk)?;
                         }
+                        write_buf[data_end..full_len].fill(0);
 
                         uploaded_add = Some(chunk.size);
                         full_len
