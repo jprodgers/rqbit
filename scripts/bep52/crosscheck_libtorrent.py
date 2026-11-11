@@ -158,6 +158,35 @@ def main() -> int:
                     their_hashes.v1.to_bytes() == ref["info_hash_v1"]
                     and their_hashes.v2.to_bytes() == ref["info_hash_v2"],
                 )
+
+        # A folder "a" next to "a.b" or "a.bin": by path component "a" sorts
+        # first (the order of the file tree); by whole path "a.b/x" and "a.bin"
+        # sort before "a/b". The torrent must use the first, and libtorrent
+        # must accept it. (libtorrent 2.1.1's own creator uses the second for
+        # the v1 file list and then rejects its own hybrid torrent.)
+        tricky = os.path.join(base, "tricky")
+        for i, rel in enumerate(("a.b/x.bin", "a/b.bin", "a-b/y.bin", "a b/z.bin", "a.bin")):
+            full = os.path.join(tricky, *rel.split("/"))
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "wb") as f:
+                f.write(random.Random(i).randbytes(40_000))
+        ref = bep52_ref.create(bep52_ref.walk(tricky), "tricky", 2 * BLOCK)
+        order = ["/".join(path) for path, _len, _root in ref["roots"]]
+        expect(
+            "folder names that continue another: file tree order",
+            order == ["a/b.bin", "a b/z.bin", "a-b/y.bin", "a.b/x.bin", "a.bin"],
+            str(order),
+        )
+        try:
+            loaded = lt.torrent_info(ref["torrent"])
+            hashes = loaded.info_hashes()
+            expect(
+                "folder names that continue another: libtorrent loads it, same hashes",
+                hashes.v1.to_bytes() == ref["info_hash_v1"]
+                and hashes.v2.to_bytes() == ref["info_hash_v2"],
+            )
+        except RuntimeError as e:
+            expect("folder names that continue another: libtorrent loads it", False, str(e))
     finally:
         if not args.keep:
             shutil.rmtree(base, ignore_errors=True)
