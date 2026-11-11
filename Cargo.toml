@@ -7,6 +7,7 @@ members = [
     "crates/clone_to_owned",
     "crates/bencode",
     "crates/sha1w",
+    "crates/create_torrent",
     "crates/librqbit_core",
     "crates/librqbit_lsd",
     "crates/peer_binary_protocol",
@@ -25,6 +26,7 @@ default-members = [
     "crates/clone_to_owned",
     "crates/bencode",
     "crates/sha1w",
+    "crates/create_torrent",
     "crates/librqbit_core",
     "crates/peer_binary_protocol",
     "crates/dht",
@@ -134,6 +136,8 @@ serde_derive = "1"
 serde_json = "1"
 serde_urlencoded = "0.7"
 serde_with = "3"
+sha1 = "0.10"
+sha2 = "0.10"
 signal-hook = "0.3"
 size_format = "1"
 socket2 = "0.6"

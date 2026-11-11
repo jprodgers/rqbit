@@ -1,0 +1,18 @@
+[package]
+name = "librqbit-create-torrent"
+version.workspace = true
+edition = "2024"
+description = "Deterministic creation of BitTorrent v2 (BEP 52) and hybrid v1+v2 torrents. Synchronous, pure Rust, no client needed."
+license = "Apache-2.0"
+repository = "https://github.com/jprodgers/rqbit"
+readme = "README.md"
+
+# Deliberately tiny: no async runtime, no OpenSSL, nothing from the rest of the
+# workspace. Hashing is RustCrypto's sha1 and sha2 (they use the CPU's SHA
+# instructions when it has them).
+[dependencies]
+sha1.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
