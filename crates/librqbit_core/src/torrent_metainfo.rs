@@ -29,7 +29,7 @@ pub struct ParsedTorrent<BufType> {
 
 /// Parse torrent metainfo from bytes (includes `info_hash` and, for v2 and
 /// hybrid torrents, `info_hash_v2`).
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 pub fn torrent_from_bytes<'de>(
     buf: &'de [u8],
 ) -> Result<TorrentMetaV1<ByteBuf<'de>>, bencode::DeserializeError> {
@@ -46,7 +46,7 @@ pub fn torrent_from_bytes<'de>(
 /// torrent (SHA-1 of the dictionary for v1 and hybrid torrents, the SHA-256
 /// truncated to 20 bytes for v2-only torrents) and the full SHA-256 for v2
 /// and hybrid torrents.
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 pub fn compute_info_hashes<BufType>(
     info: &TorrentMetaV1Info<BufType>,
     raw_info: &[u8],
@@ -141,7 +141,7 @@ impl<BufType> TorrentMetaV1<BufType> {
     }
 }
 
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 impl<BufType: AsRef<[u8]> + Clone> TorrentMetaV1<BufType> {
     /// Validate the info dictionary of a .torrent file and load its `piece
     /// layers`, which must hold the layer of every v2 file larger than a
@@ -535,7 +535,7 @@ impl<BufType: AsRef<[u8]>> ValidatedTorrentMetaV1Info<BufType> {
     /// Set the piece layer of the file at `file` in [`Self::v2_files`] (and of
     /// any other file with the same pieces root) after checking that it hashes
     /// to the file's pieces root. Returns false if it was already known.
-    #[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+    #[cfg(feature = "sha1w")]
     pub fn set_piece_layer(&self, file: usize, layer: &[Id32]) -> crate::Result<bool> {
         let pl = self.lengths.default_piece_length();
         let v2 = self.v2.as_deref().ok_or(Error::V2MissingFileTree)?;
@@ -568,7 +568,7 @@ impl<BufType: AsRef<[u8]>> ValidatedTorrentMetaV1Info<BufType> {
     /// Entries for unknown roots, or for files that need no layer, are
     /// ignored like libtorrent does. Missing entries are not an error here,
     /// see [`Self::check_all_piece_layers`].
-    #[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+    #[cfg(feature = "sha1w")]
     pub fn load_piece_layers<L: AsRef<[u8]>>(&self, layers: &PieceLayers<L>) -> crate::Result<()> {
         let pl = self.lengths.default_piece_length();
         for (root, hashes) in layers.0.iter() {
@@ -629,7 +629,7 @@ impl<BufType: AsRef<[u8]>> ValidatedTorrentMetaV1Info<BufType> {
     /// A verifier for one piece: SHA-1 for v1, the merkle hash for v2, both
     /// for hybrid torrents. None if the expected hash is not known (v2 file
     /// whose piece layer is missing, v1 torrent without the piece's hash).
-    #[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+    #[cfg(feature = "sha1w")]
     pub fn piece_verifier(
         &self,
         piece: ValidPieceIndex,
@@ -1172,7 +1172,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+    #[cfg(feature = "sha1w")]
     fn test_deserialize_torrent_with_info_hash() {
         let torrent: TorrentMetaV1Borrowed = torrent_from_bytes(TORRENT_BYTES).unwrap();
         assert_eq!(
@@ -1223,7 +1223,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+    #[cfg(feature = "sha1w")]
     fn test_private_real_torrent() {
         let buf = include_bytes!("resources/test/private.torrent");
         let torrent: TorrentMetaV1Borrowed = from_bytes(buf).unwrap();
@@ -1353,7 +1353,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+    #[cfg(feature = "sha1w")]
     fn test_url_list_does_not_change_info_hash() {
         let without = torrent_from_bytes(&torrent_with_url_list(None))
             .unwrap()

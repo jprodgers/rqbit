@@ -28,6 +28,14 @@ default-tls = [
 miri = []
 prometheus = ["metrics-exporter-prometheus"]
 rust-tls = ["reqwest/rustls", "sha1w/sha1-ring", "librqbit-core/sha1-ring"]
+# No C anywhere: hashing by the RustCrypto crates, and no TLS library, so
+# HTTPS trackers and HTTPS web seeds do not work (HTTP and UDP trackers, the
+# DHT and peers do). Use it instead of default-tls and rust-tls, not with them.
+pure-rust = ["sha1w/sha1-rustcrypto", "librqbit-core/sha1-rustcrypto"]
+# pure-rust plus rustls without a cryptography provider: the application
+# chooses one and installs it (rustls::crypto::CryptoProvider::install_default)
+# before it creates a Session. Without one, creating a Session is an error.
+pure-rust-tls-no-provider = ["pure-rust", "reqwest/rustls-no-provider", "dep:rustls"]
 storage_middleware = ["lru"]
 storage_examples = []
 tracing-subscriber-utils = ["tracing-subscriber"]
@@ -72,6 +80,7 @@ itertools.workspace = true
 http.workspace = true
 regex.workspace = true
 reqwest = { workspace = true, features = ["json", "socks", "stream"] }
+rustls = { workspace = true, features = ["std"], optional = true }
 urlencoding.workspace = true
 byteorder.workspace = true
 bitvec.workspace = true

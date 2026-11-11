@@ -13,21 +13,21 @@
 //! The geometry helpers are always available; everything that hashes needs
 //! one of the `sha1-*` features (which also provide SHA-256).
 
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 use sha1w::ISha256;
 
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 use crate::hash_id::Id32;
 
 /// Size of a leaf block of the merkle tree.
 pub const BLOCK_SIZE: u32 = 16 * 1024;
 
 /// Upper bound on the height of any tree we build: 2^64 leaves.
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 const MAX_HEIGHT: usize = 64;
 
 /// SHA-256 of one block (the leaf hash).
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 pub fn hash_block(data: &[u8]) -> Id32 {
     let mut h = sha1w::Sha256::new();
     h.update(data);
@@ -35,7 +35,7 @@ pub fn hash_block(data: &[u8]) -> Id32 {
 }
 
 /// The parent of two nodes: `SHA-256(left || right)`.
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 pub fn hash_pair(left: &Id32, right: &Id32) -> Id32 {
     let mut h = sha1w::Sha256::new();
     h.update(&left.0);
@@ -47,7 +47,7 @@ pub fn hash_pair(left: &Id32, right: &Id32) -> Id32 {
 ///
 /// `pad_hash(0)` is the padding leaf itself; `pad_hash(height_of_piece_layer)`
 /// is what fills a piece layer up to a power of two.
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 pub fn pad_hash(height: u32) -> Id32 {
     let mut h = Id32::default();
     for _ in 0..height {
@@ -81,7 +81,7 @@ pub fn piece_layer_height(piece_length: u32) -> Option<u32> {
 /// Works like a binary counter: `nodes[h]` holds a finished left subtree of
 /// height `h` exactly when bit `h` of the leaf count is set, so memory is a
 /// fixed 2 KiB array regardless of the number of leaves.
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 #[derive(Clone)]
 pub struct MerkleRootBuilder {
     nodes: [Id32; MAX_HEIGHT],
@@ -89,7 +89,7 @@ pub struct MerkleRootBuilder {
     pad_leaf: Id32,
 }
 
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 impl MerkleRootBuilder {
     /// A builder whose missing leaves are filled with `pad_leaf`. Use
     /// `Id32::default()` (zeros) for block trees and `pad_hash(h)` for trees
@@ -167,21 +167,21 @@ impl MerkleRootBuilder {
 
 /// Streams bytes, hashes them in 16 KiB blocks and builds the root over the
 /// block hashes. The last block may be short; it is hashed at its real length.
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 pub struct BlockTreeHasher {
     builder: MerkleRootBuilder,
     current: sha1w::Sha256,
     in_block: u32,
 }
 
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 impl Default for BlockTreeHasher {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 impl BlockTreeHasher {
     /// An empty hasher.
     pub fn new() -> Self {
@@ -225,7 +225,7 @@ impl BlockTreeHasher {
 
 /// The `pieces root` of a file from its piece layer. None if the layer is
 /// empty or the piece length is invalid.
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 pub fn pieces_root_from_piece_layer(piece_layer: &[Id32], piece_length: u32) -> Option<Id32> {
     let height = piece_layer_height(piece_length)?;
     if piece_layer.is_empty() {
@@ -242,7 +242,7 @@ pub fn pieces_root_from_piece_layer(piece_layer: &[Id32], piece_length: u32) -> 
 }
 
 /// The `pieces root` of a whole file computed from its content.
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 pub fn pieces_root_from_data(data: &[u8]) -> Option<Id32> {
     if data.is_empty() {
         return None;
@@ -254,7 +254,7 @@ pub fn pieces_root_from_data(data: &[u8]) -> Option<Id32> {
 
 /// The piece layer of a whole file computed from its content: one hash per
 /// piece, each the root of a subtree of `piece_length / 16 KiB` leaves.
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 pub fn piece_layer_from_data(data: &[u8], piece_length: u32) -> Option<Vec<Id32>> {
     let height = piece_layer_height(piece_length)?;
     let leaves = 1u64 << height;
@@ -330,7 +330,7 @@ impl HashRequestShape {
 }
 
 /// Root of a full layer of `hashes` (a power-of-two count, no padding).
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 fn subtree_root(hashes: &[Id32]) -> Option<Id32> {
     let count = u64::try_from(hashes.len()).ok()?;
     let mut b = MerkleRootBuilder::new(Id32::default());
@@ -344,7 +344,7 @@ fn subtree_root(hashes: &[Id32]) -> Option<Id32> {
 /// hashes followed by the uncle hashes, bottom up. True if, hashed up through
 /// the proof, they produce `pieces_root` of a file of `file_len` bytes. The
 /// shape must request a proof all the way up to the root.
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 pub fn verify_hashes(
     pieces_root: &Id32,
     file_len: u64,
@@ -383,7 +383,7 @@ pub fn verify_hashes(
 
 /// The tree of one file from its piece layer up to its root, kept to answer
 /// BEP 52 hash requests for the piece layer and the layers above it.
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 #[derive(Debug, Clone)]
 pub struct PieceLayerTree {
     piece_height: u32,
@@ -392,7 +392,7 @@ pub struct PieceLayerTree {
     layers: Vec<Box<[Id32]>>,
 }
 
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 impl PieceLayerTree {
     /// Build from a file's piece layer. None for an empty layer or an invalid
     /// piece length.
@@ -458,7 +458,7 @@ impl PieceLayerTree {
     }
 }
 
-#[cfg(all(test, any(feature = "sha1-ring", feature = "sha1-crypto-hash")))]
+#[cfg(all(test, feature = "sha1w"))]
 mod tests {
     use super::*;
 

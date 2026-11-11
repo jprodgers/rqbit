@@ -17,5 +17,5 @@ pub use hash_id::{Id20, Id32};
 pub use error::Error;
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[cfg(all(test, any(feature = "sha1-ring", feature = "sha1-crypto-hash")))]
+#[cfg(all(test, feature = "sha1w"))]
 mod bep52_tests;

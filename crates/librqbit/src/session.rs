@@ -777,6 +777,17 @@ impl Session {
                 .client_name_and_version
                 .unwrap_or_else(|| crate::client_name_and_version().to_owned());
 
+            // Building an HTTP client panics when rustls has no cryptography
+            // provider; say what is missing instead.
+            #[cfg(feature = "pure-rust-tls-no-provider")]
+            if rustls::crypto::CryptoProvider::get_default().is_none() {
+                anyhow::bail!(
+                    "no rustls CryptoProvider is installed: with the pure-rust-tls-no-provider \
+                     feature the application must call \
+                     rustls::crypto::CryptoProvider::install_default before it creates a Session"
+                );
+            }
+
             let reqwest_client = {
                 let builder = if let Some(proxy_url) = proxy_url {
                     let proxy = reqwest::Proxy::all(proxy_url)

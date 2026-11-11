@@ -513,7 +513,7 @@ impl V2Hashes {
 /// Feed the piece's bytes in order with [`PieceVerifier::update`] (for hybrid
 /// torrents that includes the bytes of padding files, read as zeros), then
 /// call [`PieceVerifier::finish`].
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 pub struct PieceVerifier {
     v1: Option<(sha1w::Sha1, [u8; 20])>,
     v2: Option<V2PieceCheck>,
@@ -521,7 +521,7 @@ pub struct PieceVerifier {
     fed: u64,
 }
 
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 struct V2PieceCheck {
     hasher: crate::merkle::BlockTreeHasher,
     leaves: u64,
@@ -531,7 +531,7 @@ struct V2PieceCheck {
     file_bytes: u64,
 }
 
-#[cfg(any(feature = "sha1-ring", feature = "sha1-crypto-hash"))]
+#[cfg(feature = "sha1w")]
 impl PieceVerifier {
     pub(crate) fn new(piece_len: u32) -> Self {
         Self {

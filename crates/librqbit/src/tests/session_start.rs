@@ -24,3 +24,23 @@ async fn test_session_listens_with_or_without_ipv6() -> anyhow::Result<()> {
     session.stop().await;
     Ok(())
 }
+
+// With rustls and no cryptography provider installed, creating a session is
+// an error that says so, not a panic inside the HTTP client.
+#[cfg(feature = "pure-rust-tls-no-provider")]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_session_without_a_tls_provider_is_an_error() -> anyhow::Result<()> {
+    let dir = TempDir::with_prefix("rqbit_session_no_provider")?;
+    let result = Session::new_with_opts(
+        dir.path().into(),
+        SessionOptions {
+            dht: None,
+            disable_local_service_discovery: true,
+            ..Default::default()
+        },
+    )
+    .await;
+    let err = format!("{:#}", result.err().expect("the session started"));
+    assert!(err.contains("CryptoProvider"), "{err}");
+    Ok(())
+}

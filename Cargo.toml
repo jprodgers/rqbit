@@ -18,6 +18,9 @@ members = [
     "desktop/src-tauri",
 ]
 
+# A copy of a crates.io crate, substituted below; not part of the workspace.
+exclude = ["vendor/network-interface"]
+
 # Everything except desktop
 default-members = [
     "crates/rqbit",
@@ -131,6 +134,7 @@ rand = "0.10"
 regex = "1"
 reqwest = { version = "0.13", default-features = false }
 rlimit = "0.11"
+rustls = { version = "0.23", default-features = false }
 serde = "1"
 serde_derive = "1"
 serde_json = "1"
@@ -160,3 +164,9 @@ urlencoding = "2"
 uuid = "1"
 walkdir = "2"
 windows = "0.62"
+
+# network-interface with its one C function written in Rust, so that the
+# pure-rust build needs no C compiler on macOS and the BSDs either. See
+# vendor/network-interface/VENDORED.md.
+[patch.crates-io]
+network-interface = { path = "vendor/network-interface" }
