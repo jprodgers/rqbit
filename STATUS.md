@@ -276,12 +276,25 @@ Three things to be straight about:
 host): use `pure-rust-tls-no-provider` instead of `pure-rust`. It adds rustls with no
 cryptography in it, and the application installs a provider of its choice
 (`rustls::crypto::CryptoProvider::install_default`) before creating the session; without one,
-creating a session returns an error that says so. I tried this outside the repository with the
-RustCrypto provider, `rustls-rustcrypto`: it compiled with the C compiler disabled and completed
-a real HTTPS request against a local test server. But that crate is a pre-release
-(`0.1.0-pre.0`), and I know of no audit of it, so I have not made it a dependency. Whatever
-JETCARP uses for its own HTTPS downloads is the natural thing to install here; if that is not
-rustls, tell me what it is.
+creating a session returns an error that says so.
+
+JETCARP has no networking until v0.6.0, so nothing has to be chosen yet. Two providers with no C
+exist today; I tried both outside the repository, with the C compiler disabled, against a local
+HTTPS test server (a real handshake with certificate verification):
+
+| | `rustls-graviola` 0.4.0 | `rustls-rustcrypto` 0.1.0-pre.0 |
+| --- | --- | --- |
+| What it is | Rust plus assembly, by the author of rustls; no build script, needs only `rustc`; reuses formally verified assembly from other projects | Rust only, from the RustCrypto project |
+| Releases | Stable releases; the library was updated 2026-11-10 | Pre-release only; no stable version yet |
+| Its own caution | "This project is very new, so exercise due caution" | Pre-release |
+| CPUs | x86-64 with AVX2 and friends (about 2014 on) and 64-bit ARM with crypto extensions (not Raspberry Pi 4 or older); nothing else | Any |
+| HTTPS request here | Worked | Worked |
+| Type-checks for macOS, Windows, ARM Linux, compiler disabled | Yes | Not checked |
+
+Neither is a dependency of this repository. My suggestion is Graviola when v0.6.0 starts, checked
+again then since both are moving, and with JETCARP designed so that integrity never rests on TLS
+(signed manifests and content hashes already do that), which keeps the cost of a flaw in either
+down to privacy.
 
 The API, by name (all exist on this branch; I have not yet driven them from a host program):
 
